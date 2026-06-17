@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from playwright.async_api import Playwright, async_playwright, expect
 from telegram import Bot
 from dotenv import load_dotenv
+from telegram.request import HTTPXRequest
 
 # Carrega variáveis do arquivo .env ou pontomais.env se existirem
 load_dotenv()
@@ -15,12 +16,21 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 # Horários alvo em BRT
 TARGET_TIMES = ["08:00", "13:00", "14:00", "17:48"]
 
+def get_bot():
+    request = HTTPXRequest(
+        connect_timeout=30,
+        read_timeout=30,
+        write_timeout=30,
+        pool_timeout=30,
+    )
+    return Bot(token=TELEGRAM_TOKEN, request=request)
+    
 async def send_telegram_message(message: str, photo_path: str = None):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("Erro: Variáveis de ambiente TELEGRAM_TOKEN ou TELEGRAM_CHAT_ID não configuradas.")
         return
 
-    bot = Bot(token=TELEGRAM_TOKEN)
+    bot = get_bot()
     try:
         if photo_path:
             with open(photo_path, "rb") as photo_file:
