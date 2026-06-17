@@ -1,0 +1,17 @@
+# Environment variables with credentials
+pontomais.env
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Screenshots (only error reports, allow success screenshots)
+error_report.png
+bater_ponto_button.png

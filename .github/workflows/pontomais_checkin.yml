@@ -1,0 +1,40 @@
+name: Pontomais Daily Check-in
+
+on:
+  schedule:
+    # Runs every day at 07:58 AM BRT (10:58 AM UTC) - 2 min before 08:00
+    - cron: '58 10 * * *'
+    # Runs every day at 12:58 PM BRT (15:58 PM UTC) - 2 min before 13:00
+    - cron: '58 15 * * *'
+    # Runs every day at 13:58 PM BRT (16:58 PM UTC) - 2 min before 14:00
+    - cron: '58 16 * * *'
+    # Runs every day at 17:46 PM BRT (20:46 PM UTC) - 2 min before 17:48
+    - cron: '46 20 * * *'
+  workflow_dispatch: # Allows manual triggering
+
+jobs:
+  check-in:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        pip install playwright python-telegram-bot python-dotenv
+        playwright install chromium --with-deps
+
+    - name: Run Pontomais Automation Script
+      env:
+        PONTOMAIS_LOGIN: ${{ secrets.PONTOMAIS_LOGIN }}
+        PONTOMAIS_PASSWORD: ${{ secrets.PONTOMAIS_PASSWORD }}
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: python pontomais_automation.py
