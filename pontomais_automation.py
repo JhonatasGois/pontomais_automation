@@ -39,18 +39,28 @@ def get_brt_time():
     brt_now = utc_now + brt_offset
     return brt_now.replace(tzinfo=None)
 
-def get_target_time():
-    """Determina o próximo horário alvo baseado na hora atual (BRT)"""
+CRON_TARGET_MAP = {
+    "58 10 * * *": "08:00",
+    "58 15 * * *": "13:00",
+    "58 16 * * *": "14:00",
+    "46 20 * * *": "17:48",
+}
+
+def _guess_by_current_time():
+    """Fallback usado em workflow_dispatch (sem cron associado)."""
     now = get_brt_time()
     current_time = now.strftime("%H:%M")
-    
-    # Encontra o próximo horário alvo
     for target in TARGET_TIMES:
         if current_time < target:
             return target
-    
-    # Se passou de todos os horários, retorna o primeiro do próximo dia
     return TARGET_TIMES[0]
+
+def get_target_time():
+    cron = os.environ.get("CRON_SCHEDULE")
+    if cron in CRON_TARGET_MAP:
+        return CRON_TARGET_MAP[cron]
+    # fallback pra execução manual (workflow_dispatch)
+    return _guess_by_current_time()
 
 async def wait_for_target_time(target_time_str):
     """Aguarda até o horário alvo"""

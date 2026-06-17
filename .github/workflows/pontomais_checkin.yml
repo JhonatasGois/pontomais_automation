@@ -32,8 +32,10 @@ jobs:
 
     - name: Run Pontomais Automation Script
       env:
+        PYTHONUNBUFFERED: "1"
+        CRON_SCHEDULE: ${{ github.event.schedule }}
         PONTOMAIS_LOGIN: ${{ secrets.PONTOMAIS_LOGIN }}
         PONTOMAIS_PASSWORD: ${{ secrets.PONTOMAIS_PASSWORD }}
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      run: python pontomais_automation.py
+      run: python -u pontomais_automation.py
