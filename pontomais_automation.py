@@ -14,7 +14,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # Horários alvo em BRT
-TARGET_TIMES = ["08:00", "13:00", "14:00", "17:48"]
+TARGET_TIMES = ["08:00", "13:00", "14:00", "17:55"]
 
 def get_bot():
     request = HTTPXRequest(
