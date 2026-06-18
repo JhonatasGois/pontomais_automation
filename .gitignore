@@ -15,3 +15,4 @@ ENV/
 # Screenshots (only error reports, allow success screenshots)
 error_report.png
 bater_ponto_button.png
+bater_ponto_success.png
