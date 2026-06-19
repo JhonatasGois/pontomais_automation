@@ -2,15 +2,15 @@ name: Pontomais Daily Check-in
 
 on:
   schedule:
-    # Runs every day at 07:58 AM BRT (10:58 AM UTC) - 2 min before 08:00
-    - cron: '58 10 * * *'
-    # Runs every day at 12:58 PM BRT (15:58 PM UTC) - 2 min before 13:00
-    - cron: '58 15 * * *'
-    # Runs every day at 13:58 PM BRT (16:58 PM UTC) - 2 min before 14:00
-    - cron: '58 16 * * *'
-    # Runs every day at 17:53 PM BRT (20:53 PM UTC) - 2 min before 17:55
-    - cron: '51 20 * * *'
-  workflow_dispatch: # Allows manual triggering
+    # 07:58 BRT (10:58 UTC) → dispara às 10:20 UTC (38min de margem pro delay do GitHub)
+    - cron: '20 10 * * *'
+    # 13:00 BRT (16:00 UTC) → dispara às 15:20 UTC
+    - cron: '20 15 * * *'
+    # 14:00 BRT (17:00 UTC) → dispara às 16:20 UTC
+    - cron: '20 16 * * *'
+    # 17:55 BRT (20:55 UTC) → dispara às 20:15 UTC
+    - cron: '15 20 * * *'
+  workflow_dispatch:
 
 jobs:
   check-in:
