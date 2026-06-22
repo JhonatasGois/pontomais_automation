@@ -172,9 +172,19 @@ async def run():
             await page.wait_for_selector(f"text={expected_address}", timeout=30000)
             print(f"[OK] Endereço validado.")
 
+            # ── GARANTIR LOCALIZAÇÃO ANTES DE BATER ───────────────────────────
+            print("[STEP 6.5] Reconfirmando localização antes de bater ponto…")
+            try:
+                btn_loc = page.locator("text='Utilizar essa localização'").first
+                await btn_loc.wait_for(state="visible", timeout=10000)
+                await btn_loc.click()
+                print("[OK] Localização reconfirmada.")
+                await page.wait_for_timeout(2000)  # aguarda o site processar
+            except Exception:
+                print("[INFO] Botão 'Utilizar essa localização' não encontrado, prosseguindo.")
+
             # ── BATER PONTO ────────────────────────────────────────────────────
             print("[STEP 7] Clicando 'Bater ponto'…")
-
             try:
                 btn_ponto = page.locator("pm-button.btn-register button.pm-button").filter(has_text="Bater ponto").first
                 await btn_ponto.wait_for(state="visible", timeout=15000)
