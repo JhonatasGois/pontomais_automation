@@ -2,14 +2,10 @@ name: Pontomais Daily Check-in
 
 on:
   schedule:
-    # 07:58 BRT (10:58 UTC) → dispara às 10:20 UTC (38min de margem pro delay do GitHub)
-    - cron: '20 10 * * *'
-    # 13:00 BRT (16:00 UTC) → dispara às 15:20 UTC
-    - cron: '20 15 * * *'
-    # 14:00 BRT (17:00 UTC) → dispara às 16:20 UTC
-    - cron: '20 16 * * *'
-    # 17:55 BRT (20:55 UTC) → dispara às 20:15 UTC
-    - cron: '15 20 * * *'
+    - cron: '55 10 * * *'  # 07:55 UTC = espera até 08:00 BRT
+    - cron: '55 15 * * *'  # 12:55 UTC = espera até 13:00 BRT
+    - cron: '55 16 * * *'  # 13:55 UTC = espera até 14:00 BRT
+    - cron: '50 20 * * *'  # 17:48 UTC = espera até 17:48 BRT
   workflow_dispatch:
 
 jobs:
