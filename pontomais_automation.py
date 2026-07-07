@@ -144,73 +144,59 @@ async def run():
             # ── BOTÃO LOCALIZAÇÃO ──────────────────────────────────────────────
             print("[STEP 4] Verificando estado da localização…")
 
-            # Checa se a localização está expirada
-            loc_expirada = False
+            # Aguarda o título da seção para garantir carregamento
+            await page.wait_for_selector("h3:has-text('Registrar ponto')", timeout=30000)
+
+            # Tenta clicar em "Utilizar essa localização" se disponível
             try:
-                await page.wait_for_selector("text='Sua localização expirou!'", state="visible", timeout=5000)
-                loc_expirada = True
-                print("[INFO] Localização expirada detectada. Clicando para atualizar…")
-            except:
-                pass
-
-            if loc_expirada:
-                btn_atualizar = "button.pm-alert:has-text('Clique aqui para atualizar a localização')"
-                await page.wait_for_selector(btn_atualizar, state="visible", timeout=15000)
-                await page.click(btn_atualizar)
-                print("[OK] Botão 'Atualizar localização' clicado.")
-                await page.wait_for_timeout(3000)  # aguarda o site reprocessar a geo
-
-            # Agora clica em "Utilizar essa localização" (fluxo normal ou pós-atualização)
-            btn_loc_selector = "text='Utilizar essa localização'"
-            await page.wait_for_selector(btn_loc_selector, state="visible", timeout=30000)
-            await page.click(btn_loc_selector)
-            print("[OK] Localização clicada.")
+                btn_utilizar_loc = page.locator("small:has-text('Utilizar essa localização')")
+                # Aguarda um pouco para o elemento aparecer
+                await btn_utilizar_loc.wait_for(state="visible", timeout=10000)
+                await btn_utilizar_loc.click()
+                print("[OK] Clique em 'Utilizar essa localização'.")
+                await page.wait_for_timeout(2000)
+            except Exception as e:
+                print(f"[INFO] Botão 'Utilizar essa localização' não encontrado ou já processado: {e}")
 
             # ── VALIDAÇÃO DE ENDEREÇO ──────────────────────────────────────────
             print("[STEP 5] Validando endereço…")
             expected_address = "Av. Dr. Chucri Zaidan, 920"
-            await page.wait_for_selector(f"text={expected_address}", timeout=30000)
-            print(f"[OK] Endereço validado.")
-
-            # ── GARANTIR LOCALIZAÇÃO ANTES DE BATER ───────────────────────────
-            print("[STEP 6.5] Reconfirmando localização antes de bater ponto…")
-
-            expected_address = "Av. Dr. Chucri Zaidan, 920"
-            max_loc_retries = 3
-
-            for attempt in range(max_loc_retries):
-                try:
-                    btn_loc = page.locator("text='Utilizar essa localização'").first
-                    await btn_loc.wait_for(state="visible", timeout=10000)
-                    await btn_loc.click()
-                    print(f"[OK] Localização clicada (tentativa {attempt + 1}).")
-                    await page.wait_for_timeout(2000)
-
-                    # Valida se o endereço apareceu corretamente
-                    await page.wait_for_selector(f"text={expected_address}", timeout=8000)
-                    print(f"[OK] Endereço confirmado: {expected_address}")
-                    break  # endereço ok, segue pro bater ponto
-
-                except Exception as e:
-                    print(f"[WARN] Endereço não confirmado na tentativa {attempt + 1}: {e}")
-                    if attempt < max_loc_retries - 1:
-                        await page.wait_for_timeout(3000)
-                    else:
-                        error_path = "loc_error.png"
-                        await page.screenshot(path=error_path)
-                        await send_telegram(
-                            f"Erro: não foi possível confirmar o endereço após {max_loc_retries} tentativas.",
-                            photo_path=error_path
-                        )
-                        raise Exception("Endereço não confirmado. Abortando para não bater ponto sem localização.")
+            
+            # Tenta encontrar o endereço de forma resiliente
+            try:
+                # Procura por qualquer elemento que contenha o endereço esperado
+                await page.wait_for_selector(f"text={expected_address}", timeout=15000)
+                print(f"[OK] Endereço validado: {expected_address}")
+            except Exception as e:
+                print(f"[ERRO] Endereço '{expected_address}' não encontrado na página.")
+                error_path = "address_not_found.png"
+                await page.screenshot(path=error_path)
+                await send_telegram(f"Erro: Endereço '{expected_address}' não encontrado.", photo_path=error_path)
+                raise Exception(f"Endereço não validado.")
 
             # ── BATER PONTO ────────────────────────────────────────────────────
             print("[STEP 7] Clicando 'Bater ponto'…")
+            
+            # Seletor preciso: botão pm-primary dentro do container btn-register
+            btn_register_selector = "pm-button.btn-register.mt-1 button.pm-primary"
+            
             try:
-                # Força o clique via JS direto no botão pm-primary dentro do componente de registro
+                await page.wait_for_selector(btn_register_selector, state="visible", timeout=15000)
+                
+                # Antes de clicar, tirar um print de depuração para o usuário
+                debug_path = "debug_before_click.png"
+                await page.screenshot(path=debug_path)
+                print(f"[DEBUG] Screenshot salvo em {debug_path}")
+
+                await page.click(btn_register_selector)
+                print("[OK] Botão 'Bater ponto' clicado com seletor específico.")
+                await page.wait_for_timeout(3000)
+
+            except Exception as e:
+                print(f"[RETRY] Falha com seletor específico. Tentando clique via JavaScript...")
                 clicked = await page.evaluate("""
                     () => {
-                        const buttons = document.querySelectorAll('vrgente-time-card-register-point button.pm-button.pm-primary');
+                        const buttons = document.querySelectorAll('button.pm-primary');
                         for (const btn of buttons) {
                             if (btn.textContent.includes('Bater ponto')) {
                                 btn.click();
@@ -220,19 +206,10 @@ async def run():
                         return false;
                     }
                 """)
-                
-                if not clicked:
-                    raise Exception("Botão 'Bater ponto' não encontrado via JS.")
-                
-                print("[OK] Botão 'Bater ponto' clicado via JS.")
-                await page.wait_for_timeout(3000)
-
-            except Exception as e:
-                print(f"[ERRO] Botão não encontrado.")
-                error_path = "timeout_button.png"
-                await page.screenshot(path=error_path)
-                await send_telegram("Aviso: O botão 'Bater ponto' não foi encontrado.", photo_path=error_path)
-                raise e
+                if clicked:
+                    print("[OK] Botão 'Bater ponto' clicado via JS.")
+                else:
+                    raise Exception("Botão 'Bater ponto' não encontrado por nenhum método.")
             
             # Tirar print do botão pronto
             ponto_ready_path = "bater_ponto_ready.png"
