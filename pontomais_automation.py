@@ -28,7 +28,7 @@ async def send_telegram(message: str, photo_path: str = None):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("[WARN] Telegram não configurado.")
         return
-    
+
     bot = get_bot()
     max_retries = 3
     for attempt in range(max_retries):
@@ -54,14 +54,28 @@ async def send_telegram(message: str, photo_path: str = None):
 def get_brt_time():
     return (datetime.now(timezone.utc) + timedelta(hours=-3)).replace(tzinfo=None)
 
-CRON_TARGET_MAP = {
-    "55 10 * * *": "08:00",
-    "55 15 * * *": "13:00",
-    "55 16 * * *": "14:00",
-    "50 20 * * *": "17:48",
-}
+def get_target_time():
+    """
+    Determina o horário-alvo mais próximo com base no horário atual.
+    Como o workflow agora é disparado externamente (cron-job.org) já
+    próximo do horário exato, isso serve apenas como referência/log.
+    """
+    now_str = get_brt_time().strftime("%H:%M")
+    for t in TARGET_TIMES:
+        if now_str < t:
+            return t
+    return TARGET_TIMES[0]
+
+MAX_WAIT_SECONDS = 15 * 60  # teto de segurança: nunca espera mais que 15 min
 
 async def sleep_until_target(target_time_str: str):
+    """
+    Sempre aguarda até o horário-alvo exato antes de prosseguir.
+    - Se o job começou antes do horário: espera até o segundo exato.
+    - Se já passou do horário: executa imediatamente (não faz sentido esperar 24h).
+    - Teto de MAX_WAIT_SECONDS para não travar o job indefinidamente
+      caso algo dispare muito errado (ex: horário trocado sem querer).
+    """
     now = get_brt_time()
     target = now.replace(
         hour=int(target_time_str[:2]),
@@ -70,28 +84,19 @@ async def sleep_until_target(target_time_str: str):
         microsecond=0
     )
     delta = (target - now).total_seconds()
-    if 0 < delta <= 600:
-        print(f"[SLEEP] Aguardando {delta:.0f}s até {target_time_str} BRT…")
-        await asyncio.sleep(delta)
-    elif delta <= 0:
+
+    if delta <= 0:
         print(f"[INFO] Horário alvo já passou por {abs(delta):.0f}s, executando agora.")
-    else:
-        print(f"[WARN] Delta inesperado ({delta:.0f}s), executando sem esperar.")
+        return
 
-async def run():
-    target_time = get_target_time()
-    print(f"[INFO] Horário alvo: {target_time} BRT")
-    await sleep_until_target(target_time)  # ← segura aqui até o horário exato
+    if delta > MAX_WAIT_SECONDS:
+        print(f"[WARN] Delta de {delta:.0f}s excede o teto de {MAX_WAIT_SECONDS}s. "
+              f"Executando sem esperar (verifique se o disparo está correto).")
+        return
 
-def get_target_time():
-    cron = os.environ.get("CRON_SCHEDULE", "")
-    if cron in CRON_TARGET_MAP:
-        return CRON_TARGET_MAP[cron]
-    now_str = get_brt_time().strftime("%H:%M")
-    for t in TARGET_TIMES:
-        if now_str < t:
-            return t
-    return TARGET_TIMES[0]
+    print(f"[SLEEP] Aguardando {delta:.0f}s até {target_time_str} BRT…")
+    await asyncio.sleep(delta)
+    print(f"[OK] Horário {target_time_str} BRT atingido.")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Fluxo principal
@@ -99,6 +104,7 @@ def get_target_time():
 async def run():
     target_time = get_target_time()
     print(f"[INFO] Horário alvo: {target_time} BRT")
+    await sleep_until_target(target_time)
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -123,7 +129,7 @@ async def run():
                         await asyncio.sleep(5)
                     else:
                         raise e
-            
+
             await page.wait_for_timeout(4000)
 
             login = os.environ.get("PONTOMAIS_LOGIN")
@@ -206,10 +212,19 @@ async def run():
                         return false;
                     }
                 """)
-                if clicked:
-                    print("[OK] Botão 'Bater ponto' clicado via JS.")
-                else:
-                    raise Exception("Botão 'Bater ponto' não encontrado por nenhum método.")
+                
+                if not clicked:
+                    raise Exception("Botão 'Bater ponto' não encontrado via JS.")
+                
+                print("[OK] Botão 'Bater ponto' clicado via JS.")
+                await page.wait_for_timeout(3000)
+
+            except Exception as e:
+                print(f"[ERRO] Botão não encontrado.")
+                error_path = "timeout_button.png"
+                await page.screenshot(path=error_path)
+                await send_telegram("Aviso: O botão 'Bater ponto' não foi encontrado.", photo_path=error_path)
+                raise e
             
             # Tirar print do botão pronto
             ponto_ready_path = "bater_ponto_ready.png"
