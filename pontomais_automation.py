@@ -14,6 +14,22 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 TARGET_TIMES = ["08:00", "13:00", "14:00", "17:55"]
 
+# Quantas vezes tentar o fluxo inteiro (login -> registrar-ponto -> bater ponto)
+# antes de desistir e notificar falha definitiva.
+MAX_FLOW_RETRIES = 3
+FLOW_RETRY_DELAY_SECONDS = 20
+
+# Watchdog: tempo máximo que o processo inteiro (espera + fluxo) pode rodar
+# antes de ser abortado à força. Serve pra nunca deixar o job pendurado até
+# o limite de 6h do GitHub Actions.
+GLOBAL_TIMEOUT_SECONDS = 60 * 60  # 1 hora
+
+# Teto de segurança para a espera até o horário-alvo. Cobre o pior caso real:
+# disparo único no início do dia (ex: 08:00) esperando até o último alvo
+# (17:55), mais uma margem de folga.
+MAX_WAIT_SECONDS = 11 * 60 * 60  # 11 horas
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Telegram com Lógica de Retry
 # ──────────────────────────────────────────────────────────────────────────────
@@ -57,8 +73,6 @@ def get_brt_time():
 def get_target_time():
     """
     Determina o horário-alvo mais próximo com base no horário atual.
-    Como o workflow agora é disparado externamente (cron-job.org) já
-    próximo do horário exato, isso serve apenas como referência/log.
     """
     now_str = get_brt_time().strftime("%H:%M")
     for t in TARGET_TIMES:
@@ -66,15 +80,16 @@ def get_target_time():
             return t
     return TARGET_TIMES[0]
 
-MAX_WAIT_SECONDS = 15 * 60  # teto de segurança: nunca espera mais que 15 min
-
 async def sleep_until_target(target_time_str: str):
     """
     Sempre aguarda até o horário-alvo exato antes de prosseguir.
-    - Se o job começou antes do horário: espera até o segundo exato.
-    - Se já passou do horário: executa imediatamente (não faz sentido esperar 24h).
-    - Teto de MAX_WAIT_SECONDS para não travar o job indefinidamente
-      caso algo dispare muito errado (ex: horário trocado sem querer).
+    - Se o job começou antes do horário: espera até o segundo exato,
+      em pequenos incrementos (permite reagir a cancelamento do job
+      e evita ficar preso num único asyncio.sleep gigante).
+    - Se já passou do horário: executa imediatamente.
+    - MAX_WAIT_SECONDS é só um teto de sanidade (ex: se o horário-alvo
+      calculado estiver muito errado por bug); em operação normal a
+      espera real (até 11h, cobrindo 08:00 -> 17:55) nunca deve estourar.
     """
     now = get_brt_time()
     target = now.replace(
@@ -90,22 +105,35 @@ async def sleep_until_target(target_time_str: str):
         return
 
     if delta > MAX_WAIT_SECONDS:
-        print(f"[WARN] Delta de {delta:.0f}s excede o teto de {MAX_WAIT_SECONDS}s. "
-              f"Executando sem esperar (verifique se o disparo está correto).")
+        print(f"[WARN] Delta de {delta:.0f}s excede o teto de sanidade de {MAX_WAIT_SECONDS}s. "
+              f"Executando sem esperar (verifique se o horário-alvo está correto).")
+        await send_telegram(
+            f"Aviso: delta calculado ({delta:.0f}s) excede o teto de sanidade. "
+            f"Executando imediatamente sem esperar {target_time_str}."
+        )
         return
 
     print(f"[SLEEP] Aguardando {delta:.0f}s até {target_time_str} BRT…")
-    await asyncio.sleep(delta)
+    remaining = delta
+    # Dorme em blocos de até 5 minutos para logar progresso e não ficar
+    # com um único sleep enorme e opaco.
+    CHUNK = 5 * 60
+    while remaining > 0:
+        step = min(CHUNK, remaining)
+        await asyncio.sleep(step)
+        remaining -= step
+        if remaining > 0:
+            print(f"[SLEEP] Ainda faltam ~{remaining:.0f}s até {target_time_str} BRT…")
     print(f"[OK] Horário {target_time_str} BRT atingido.")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Fluxo principal
+# Fluxo principal (uma tentativa)
 # ──────────────────────────────────────────────────────────────────────────────
-async def run():
-    target_time = get_target_time()
-    print(f"[INFO] Horário alvo: {target_time} BRT")
-    await sleep_until_target(target_time)
-
+async def run_flow_once(attempt: int):
+    """
+    Executa uma tentativa completa do fluxo: login -> registrar-ponto -> bater ponto.
+    Lança exceção se algo falhar (para o chamador decidir sobre retry).
+    """
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
@@ -119,18 +147,18 @@ async def run():
 
         try:
             # ── LOGIN ──────────────────────────────────────────────────────────
-            print("[STEP 1] Navegando para login…")
+            print(f"[STEP 1] (tentativa {attempt}) Navegando para login…")
             max_retries = 3
-            for attempt in range(max_retries):
+            for goto_attempt in range(max_retries):
                 try:
                     await page.goto("https://app2.pontomais.com.br/login", wait_until="domcontentloaded", timeout=60000)
                     break
                 except Exception as e:
-                    if attempt < max_retries - 1:
-                        print(f"[RETRY] Falha ao carregar login (tentativa {attempt + 1}). Erro: {e}")
+                    if goto_attempt < max_retries - 1:
+                        print(f"[RETRY] Falha ao carregar login (tentativa {goto_attempt + 1}). Erro: {e}")
                         await asyncio.sleep(5)
                     else:
-                        raise e
+                        raise
 
             await page.wait_for_timeout(4000)
 
@@ -153,83 +181,50 @@ async def run():
             print("[STEP 4] Verificando estado da localização…")
             await page.wait_for_selector("h3:has-text('Registrar ponto')", timeout=30000)
 
-            # Tratamento de Erro de Localização (Toasts Vermelhos)
-            print("[INFO] Verificando se há erros de localização...")
-            toast_error_selector = "div.dx-toast-error, .pm-alert-danger"
+            # Tenta clicar em "Utilizar essa localização" se disponível
             try:
-                if await page.locator(toast_error_selector).is_visible(timeout=5000):
-                    print("[WARN] Erro de localização detectado via alerta. Tentando recuperar...")
-                    # Se houver erro, forçamos o clique no "Utilizar essa localização" do último registro
-                    btn_last_loc = page.locator("small:has-text('Utilizar essa localização')")
-                    await btn_last_loc.click()
-                    print("[OK] Clique em 'Utilizar essa localização' após erro.")
-                    await page.wait_for_timeout(3000)
-            except:
-                pass
-
-            # ── VALIDAÇÃO DE ENDEREÇO (COMPARAÇÃO RIGOROSA) ────────────────────
-            print("[STEP 5] Validando e comparando endereços…")
-            
-            # 1. Obtém o endereço de referência (Último Registro)
-            try:
-                # O endereço do último registro fica dentro de um card específico
-                # Usamos .first para evitar erro de múltiplos elementos caso o site mude
-                last_loc_card = page.locator("div.pm-card:has-text('Localização do meu último registro')")
-                last_loc_text = await last_loc_card.locator("div.pm-text-default").filter(has_text="Av. Dr. Chucri Zaidan").first.inner_text()
-                last_loc_text = last_loc_text.replace("home", "").replace("Meu local de trabalho", "").strip()
-                print(f"[INFO] Endereço de referência (Último): {last_loc_text}")
+                btn_utilizar_loc = page.locator("small:has-text('Utilizar essa localização')")
+                # Aguarda um pouco para o elemento aparecer
+                await btn_utilizar_loc.wait_for(state="visible", timeout=10000)
+                await btn_utilizar_loc.click()
+                print("[OK] Clique em 'Utilizar essa localização'.")
+                await page.wait_for_timeout(2000)
             except Exception as e:
-                print(f"[WARN] Falha ao ler endereço de referência: {e}")
-                last_loc_text = "Av. Dr. Chucri Zaidan, 920" # Fallback manual se falhar a leitura
+                print(f"[INFO] Botão 'Utilizar essa localização' não encontrado ou já processado: {e}")
 
-            # 2. Obtém o endereço atual (obtido via GPS/Navegador)
+            # ── VALIDAÇÃO DE ENDEREÇO ──────────────────────────────────────────
+            print("[STEP 5] Validando endereço…")
+            expected_address = "Av. Dr. Chucri Zaidan, 920"
+            
+            # Tenta encontrar o endereço de forma resiliente
             try:
-                # O endereço atual fica no card de "Localização"
-                current_loc_card = page.locator("div.pm-card:has-text('Localização')").filter(has_not=page.locator("text='último registro'"))
-                current_loc_text = await current_loc_card.locator("div.pm-text-default").inner_text()
-                current_loc_text = current_loc_text.replace("home", "").replace("Meu local de trabalho", "").strip()
-                print(f"[INFO] Endereço atual detectado: {current_loc_text}")
-            except:
-                print("[INFO] Endereço atual não detectado automaticamente. Tentando forçar...")
-                current_loc_text = ""
-
-            # 3. Comparação e Tomada de Decisão
-            # Se o endereço atual for diferente do último, ou estiver vazio, forçamos o uso do último
-            if not current_loc_text or last_loc_text[:20] not in current_loc_text:
-                print("[WARN] Endereço atual diverge ou não foi obtido. Forçando 'Utilizar essa localização' do último registro...")
-                btn_use_last = page.locator("small:has-text('Utilizar essa localização')")
-                await btn_use_last.click()
-                await page.wait_for_timeout(3000)
-                
-                # Re-valida após o clique
-                final_check_text = await page.locator("div.pm-card:has-text('Localização')").first.inner_text()
-                if last_loc_text[:20] in final_check_text:
-                    print("[OK] Endereço corrigido com sucesso para o do último registro.")
-                else:
-                    raise Exception("Falha crítica: Endereço não pôde ser validado mesmo após tentativa de correção.")
-            else:
-                print("[OK] Endereço atual validado e coincide com o registro anterior.")
+                # Procura por qualquer elemento que contenha o endereço esperado
+                await page.wait_for_selector(f"text={expected_address}", timeout=15000)
+                print(f"[OK] Endereço validado: {expected_address}")
+            except Exception as e:
+                print(f"[ERRO] Endereço '{expected_address}' não encontrado na página.")
+                error_path = "address_not_found.png"
+                await page.screenshot(path=error_path)
+                await send_telegram(f"Erro: Endereço '{expected_address}' não encontrado.", photo_path=error_path)
+                raise Exception(f"Endereço não validado.")
 
             # ── BATER PONTO ────────────────────────────────────────────────────
             print("[STEP 7] Clicando 'Bater ponto'…")
-            
-            # Seletor preciso: botão pm-primary dentro do container btn-register
             btn_register_selector = "pm-button.btn-register.mt-1 button.pm-primary"
-            
+            clicked = False
+
             try:
                 await page.wait_for_selector(btn_register_selector, state="visible", timeout=15000)
-                
-                # Antes de clicar, tirar um print de depuração para o usuário
+
                 debug_path = "debug_before_click.png"
                 await page.screenshot(path=debug_path)
                 print(f"[DEBUG] Screenshot salvo em {debug_path}")
 
                 await page.click(btn_register_selector)
                 print("[OK] Botão 'Bater ponto' clicado com seletor específico.")
-                await page.wait_for_timeout(3000)
-
+                clicked = True
             except Exception as e:
-                print(f"[RETRY] Falha com seletor específico. Tentando clique via JavaScript...")
+                print(f"[RETRY] Falha com seletor específico ({e}). Tentando clique via JavaScript...")
                 clicked = await page.evaluate("""
                     () => {
                         const buttons = document.querySelectorAll('button.pm-primary');
@@ -242,36 +237,91 @@ async def run():
                         return false;
                     }
                 """)
-                
-                if not clicked:
-                    raise Exception("Botão 'Bater ponto' não encontrado via JS.")
-                
-                print("[OK] Botão 'Bater ponto' clicado via JS.")
-                await page.wait_for_timeout(3000)
+                if clicked:
+                    print("[OK] Botão 'Bater ponto' clicado via JS.")
 
-            except Exception as e:
-                print(f"[ERRO] Botão não encontrado.")
+            if not clicked:
                 error_path = "timeout_button.png"
                 await page.screenshot(path=error_path)
                 await send_telegram("Aviso: O botão 'Bater ponto' não foi encontrado.", photo_path=error_path)
-                raise e
-            
-            # Tirar print do botão pronto
+                raise Exception("Botão 'Bater ponto' não encontrado (seletor e JS falharam).")
+
+            await page.wait_for_timeout(3000)
+
+            # Print de confirmação
             ponto_ready_path = "bater_ponto_ready.png"
             await page.screenshot(path=ponto_ready_path)
-            await send_telegram("O botão 'Bater ponto' está pronto e habilitado!", photo_path=ponto_ready_path)
+            await send_telegram("Ponto registrado com sucesso!", photo_path=ponto_ready_path)
             print("[OK] Sucesso total.")
-
             print("Processo concluído com sucesso!")
 
         except Exception as e:
             error_path = "error_report.png"
-            await page.screenshot(path=error_path)
-            await send_telegram(f"Erro na execução: {str(e)[:150]}", photo_path=error_path)
-            print(f"Erro: {e}")
+            try:
+                await page.screenshot(path=error_path)
+            except Exception:
+                error_path = None
+            print(f"[ERRO] Tentativa {attempt} falhou: {e}")
+            # Propaga para o orquestrador de retry decidir o que fazer.
+            raise
         finally:
             await browser.close()
             print("Navegador fechado.")
 
+
+async def run_flow_with_retries():
+    """
+    Orquestra retries de todo o fluxo (login -> bater ponto).
+    Notifica falha definitiva apenas após esgotar as tentativas.
+    """
+    last_error = None
+    for attempt in range(1, MAX_FLOW_RETRIES + 1):
+        try:
+            await run_flow_once(attempt)
+            return  # sucesso, encerra
+        except Exception as e:
+            last_error = e
+            if attempt < MAX_FLOW_RETRIES:
+                print(f"[FLOW RETRY] Tentativa {attempt}/{MAX_FLOW_RETRIES} falhou. "
+                      f"Aguardando {FLOW_RETRY_DELAY_SECONDS}s antes de tentar novamente…")
+                await asyncio.sleep(FLOW_RETRY_DELAY_SECONDS)
+            else:
+                print(f"[FLOW FAILED] Todas as {MAX_FLOW_RETRIES} tentativas falharam.")
+
+    # Se chegou aqui, esgotou as tentativas.
+    await send_telegram(
+        f"FALHA DEFINITIVA: {MAX_FLOW_RETRIES} tentativas de bater ponto falharam. "
+        f"Último erro: {str(last_error)[:200]}"
+    )
+    raise last_error
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Entrada principal
+# ──────────────────────────────────────────────────────────────────────────────
+async def main():
+    target_time = get_target_time()
+    print(f"[INFO] Horário alvo: {target_time} BRT")
+
+    async def full_process():
+        await sleep_until_target(target_time)
+        await run_flow_with_retries()
+
+    try:
+        # Watchdog geral: aborta o processo inteiro se passar do limite,
+        # em vez de deixar o job do GitHub Actions rodar até o timeout de 6h.
+        await asyncio.wait_for(full_process(), timeout=GLOBAL_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        msg = (f"FALHA CRÍTICA: processo abortado por watchdog após "
+               f"{GLOBAL_TIMEOUT_SECONDS}s sem concluir (alvo era {target_time} BRT).")
+        print(f"[WATCHDOG] {msg}")
+        await send_telegram(msg)
+        raise
+    except Exception as e:
+        # run_flow_with_retries já notificou a falha definitiva; aqui só logamos.
+        print(f"[FATAL] Processo encerrado com erro: {e}")
+        raise
+
+
 if __name__ == "__main__":
-    asyncio.run(run())
+    asyncio.run(main())
