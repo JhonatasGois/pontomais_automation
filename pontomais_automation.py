@@ -66,7 +66,10 @@ def get_target_time():
             return t
     return TARGET_TIMES[0]
 
-MAX_WAIT_SECONDS = 15 * 60  # teto de segurança: nunca espera mais que 15 min
+# Teto de segurança para sleep_until_target: precisa cobrir o pior caso real
+# (disparo às 08:00 mirando 17:55 => ~10h de espera). NÃO reduzir para valores
+# baixos (ex: 15 min) — isso reintroduz o bug de execução prematura.
+MAX_WAIT_SECONDS = 12 * 60 * 60  # 12 horas
 
 async def sleep_until_target(target_time_str: str):
     """
@@ -99,9 +102,9 @@ async def sleep_until_target(target_time_str: str):
     print(f"[OK] Horário {target_time_str} BRT atingido.")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Fluxo principal
+# Fluxo principal (uma tentativa)
 # ──────────────────────────────────────────────────────────────────────────────
-async def run():
+async def run_flow():
     target_time = get_target_time()
     print(f"[INFO] Horário alvo: {target_time} BRT")
     await sleep_until_target(target_time)
@@ -167,9 +170,24 @@ async def run():
             except:
                 pass
 
+            # Tratamento específico: card "Não foi possível obter sua localização"
+            # (mensagem em laranja, com o link "Utilizar a localização do meu
+            # último registro" logo abaixo — texto diferente do link tratado acima)
+            print("[INFO] Verificando se apareceu 'Não foi possível obter sua localização'...")
+            try:
+                loc_failed_msg = page.locator("text=Não foi possível obter sua localização")
+                if await loc_failed_msg.is_visible(timeout=5000):
+                    print("[WARN] Localização não obtida pelo navegador. Clicando em 'Utilizar a localização do meu último registro'...")
+                    btn_use_last_registered = page.locator("text=Utilizar a localização do meu último registro")
+                    await btn_use_last_registered.click()
+                    print("[OK] Clique em 'Utilizar a localização do meu último registro' realizado.")
+                    await page.wait_for_timeout(3000)
+            except Exception:
+                pass
+
             # ── VALIDAÇÃO DE ENDEREÇO (COMPARAÇÃO RIGOROSA) ────────────────────
             print("[STEP 5] Validando e comparando endereços…")
-            
+
             # 1. Obtém o endereço de referência (Último Registro)
             try:
                 # O endereço do último registro fica dentro de um card específico
@@ -200,7 +218,7 @@ async def run():
                 btn_use_last = page.locator("small:has-text('Utilizar essa localização')")
                 await btn_use_last.click()
                 await page.wait_for_timeout(3000)
-                
+
                 # Re-valida após o clique
                 final_check_text = await page.locator("div.pm-card:has-text('Localização')").first.inner_text()
                 if last_loc_text[:20] in final_check_text:
@@ -212,13 +230,16 @@ async def run():
 
             # ── BATER PONTO ────────────────────────────────────────────────────
             print("[STEP 7] Clicando 'Bater ponto'…")
-            
+
             # Seletor preciso: botão pm-primary dentro do container btn-register
             btn_register_selector = "pm-button.btn-register.mt-1 button.pm-primary"
-            
+
+            # Fallback chain única: seletor CSS -> clique via JS -> erro/notify.
+            # (Antes havia dois blocos "except Exception" seguidos no mesmo try,
+            # o que tornava o segundo bloco código morto e inalcançável.)
             try:
                 await page.wait_for_selector(btn_register_selector, state="visible", timeout=15000)
-                
+
                 # Antes de clicar, tirar um print de depuração para o usuário
                 debug_path = "debug_before_click.png"
                 await page.screenshot(path=debug_path)
@@ -229,33 +250,53 @@ async def run():
                 await page.wait_for_timeout(3000)
 
             except Exception as e:
-                print(f"[RETRY] Falha com seletor específico. Tentando clique via JavaScript...")
-                clicked = await page.evaluate("""
-                    () => {
-                        const buttons = document.querySelectorAll('button.pm-primary');
-                        for (const btn of buttons) {
-                            if (btn.textContent.includes('Bater ponto')) {
-                                btn.click();
-                                return true;
-                            }
-                        }
-                        return false;
-                    }
-                """)
-                
-                if not clicked:
-                    raise Exception("Botão 'Bater ponto' não encontrado via JS.")
-                
-                print("[OK] Botão 'Bater ponto' clicado via JS.")
-                await page.wait_for_timeout(3000)
+                print(f"[RETRY] Falha com seletor específico ({e}). Verificando se o clique já registrou antes de tentar de novo...")
+                try:
+                    await page.wait_for_timeout(1500)
 
-            except Exception as e:
-                print(f"[ERRO] Botão não encontrado.")
-                error_path = "timeout_button.png"
-                await page.screenshot(path=error_path)
-                await send_telegram("Aviso: O botão 'Bater ponto' não foi encontrado.", photo_path=error_path)
-                raise e
-            
+                    # O click() do Playwright pode ter efetivamente registrado o
+                    # ponto e SÓ DEPOIS lançar exceção (ex: navegação/re-render
+                    # destruindo o contexto de execução). Se o botão já sumiu ou
+                    # está desabilitado, o clique anterior provavelmente já
+                    # funcionou — NÃO clicar de novo via JS, para evitar bater
+                    # ponto duas vezes.
+                    already_clicked = await page.evaluate("""
+                        () => {
+                            const btn = [...document.querySelectorAll('button.pm-primary')]
+                                .find(b => b.textContent.includes('Bater ponto'));
+                            return !btn || btn.disabled;
+                        }
+                    """)
+
+                    if already_clicked:
+                        print("[OK] Botão já não está mais clicável — clique anterior provavelmente teve efeito. Não vou clicar de novo.")
+                    else:
+                        clicked = await page.evaluate("""
+                            () => {
+                                const buttons = document.querySelectorAll('button.pm-primary');
+                                for (const btn of buttons) {
+                                    if (btn.textContent.includes('Bater ponto')) {
+                                        btn.click();
+                                        return true;
+                                    }
+                                }
+                                return false;
+                            }
+                        """)
+
+                        if not clicked:
+                            raise Exception("Botão 'Bater ponto' não encontrado via JS.")
+
+                        print("[OK] Botão 'Bater ponto' clicado via JS.")
+                        await page.wait_for_timeout(3000)
+
+                except Exception as e2:
+                    print(f"[ERRO] Botão não encontrado.")
+                    error_path = "timeout_button.png"
+                    await page.screenshot(path=error_path)
+                    await send_telegram("Aviso: O botão 'Bater ponto' não foi encontrado.", photo_path=error_path)
+                    raise e2
+
             # Tirar print do botão pronto
             ponto_ready_path = "bater_ponto_ready.png"
             await page.screenshot(path=ponto_ready_path)
@@ -269,9 +310,55 @@ async def run():
             await page.screenshot(path=error_path)
             await send_telegram(f"Erro na execução: {str(e)[:150]}", photo_path=error_path)
             print(f"Erro: {e}")
+            raise
         finally:
             await browser.close()
             print("Navegador fechado.")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Orquestração de retries (fluxo completo)
+# ──────────────────────────────────────────────────────────────────────────────
+MAX_FLOW_RETRIES = 3
+
+async def run_flow_with_retries():
+    last_error = None
+    for attempt in range(1, MAX_FLOW_RETRIES + 1):
+        try:
+            print(f"[FLOW] Tentativa {attempt}/{MAX_FLOW_RETRIES}…")
+            await run_flow()
+            print(f"[FLOW] Sucesso na tentativa {attempt}.")
+            return
+        except Exception as e:
+            last_error = e
+            print(f"[FLOW ERROR] Tentativa {attempt}/{MAX_FLOW_RETRIES} falhou: {e}")
+            if attempt < MAX_FLOW_RETRIES:
+                await asyncio.sleep(10)
+
+    # Todas as tentativas falharam
+    msg = f"Falha definitiva após {MAX_FLOW_RETRIES} tentativas: {str(last_error)[:200]}"
+    print(f"[FLOW FAILED] {msg}")
+    await send_telegram(msg)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Watchdog global — evita que o job fique preso até o timeout padrão (6h) do
+# GitHub Actions caso algo trave de forma inesperada.
+#
+# ATENÇÃO: decisão em aberto — se o disparo externo (cron-job.org) puder
+# acontecer bem antes do horário-alvo (ex: 08:00 disparando para um alvo às
+# 17:55, ~10h de espera dentro de sleep_until_target), este valor precisa ser
+# maior que esse pior caso (recomenda-se ~12-13h). Se o cron externo sempre
+# disparar próximo do horário exato, esse timeout pode ser bem menor
+# (ex: 1h), já que não have-rá espera longa dentro do script.
+# ──────────────────────────────────────────────────────────────────────────────
+GLOBAL_TIMEOUT_SECONDS = 13 * 60 * 60  # 13 horas
+
+async def run():
+    try:
+        await asyncio.wait_for(run_flow_with_retries(), timeout=GLOBAL_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        msg = f"Watchdog: job abortado após exceder {GLOBAL_TIMEOUT_SECONDS}s sem concluir."
+        print(f"[WATCHDOG TIMEOUT] {msg}")
+        await send_telegram(msg)
 
 if __name__ == "__main__":
     asyncio.run(run())
