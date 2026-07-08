@@ -110,7 +110,9 @@ async def run():
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
             viewport={"width": 1280, "height": 720},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            permissions=["geolocation"],
+            geolocation={"latitude": -23.6125, "longitude": -46.6995} # Coordenadas aproximadas da Chucri Zaidan, 920
         )
         page = await context.new_page()
         page.set_default_timeout(60000)
@@ -149,36 +151,64 @@ async def run():
 
             # ── BOTÃO LOCALIZAÇÃO ──────────────────────────────────────────────
             print("[STEP 4] Verificando estado da localização…")
-
-            # Aguarda o título da seção para garantir carregamento
             await page.wait_for_selector("h3:has-text('Registrar ponto')", timeout=30000)
 
-            # Tenta clicar em "Utilizar essa localização" se disponível
+            # Tratamento de Erro de Localização (Toasts Vermelhos)
+            print("[INFO] Verificando se há erros de localização...")
+            toast_error_selector = "div.dx-toast-error, .pm-alert-danger"
             try:
-                btn_utilizar_loc = page.locator("small:has-text('Utilizar essa localização')")
-                # Aguarda um pouco para o elemento aparecer
-                await btn_utilizar_loc.wait_for(state="visible", timeout=10000)
-                await btn_utilizar_loc.click()
-                print("[OK] Clique em 'Utilizar essa localização'.")
-                await page.wait_for_timeout(2000)
-            except Exception as e:
-                print(f"[INFO] Botão 'Utilizar essa localização' não encontrado ou já processado: {e}")
+                if await page.locator(toast_error_selector).is_visible(timeout=5000):
+                    print("[WARN] Erro de localização detectado via alerta. Tentando recuperar...")
+                    # Se houver erro, forçamos o clique no "Utilizar essa localização" do último registro
+                    btn_last_loc = page.locator("small:has-text('Utilizar essa localização')")
+                    await btn_last_loc.click()
+                    print("[OK] Clique em 'Utilizar essa localização' após erro.")
+                    await page.wait_for_timeout(3000)
+            except:
+                pass
 
-            # ── VALIDAÇÃO DE ENDEREÇO ──────────────────────────────────────────
-            print("[STEP 5] Validando endereço…")
-            expected_address = "Av. Dr. Chucri Zaidan, 920"
+            # ── VALIDAÇÃO DE ENDEREÇO (COMPARAÇÃO RIGOROSA) ────────────────────
+            print("[STEP 5] Validando e comparando endereços…")
             
-            # Tenta encontrar o endereço de forma resiliente
+            # 1. Obtém o endereço de referência (Último Registro)
             try:
-                # Procura por qualquer elemento que contenha o endereço esperado
-                await page.wait_for_selector(f"text={expected_address}", timeout=15000)
-                print(f"[OK] Endereço validado: {expected_address}")
+                # O endereço do último registro fica dentro de um card específico
+                # Usamos .first para evitar erro de múltiplos elementos caso o site mude
+                last_loc_card = page.locator("div.pm-card:has-text('Localização do meu último registro')")
+                last_loc_text = await last_loc_card.locator("div.pm-text-default").filter(has_text="Av. Dr. Chucri Zaidan").first.inner_text()
+                last_loc_text = last_loc_text.replace("home", "").replace("Meu local de trabalho", "").strip()
+                print(f"[INFO] Endereço de referência (Último): {last_loc_text}")
             except Exception as e:
-                print(f"[ERRO] Endereço '{expected_address}' não encontrado na página.")
-                error_path = "address_not_found.png"
-                await page.screenshot(path=error_path)
-                await send_telegram(f"Erro: Endereço '{expected_address}' não encontrado.", photo_path=error_path)
-                raise Exception(f"Endereço não validado.")
+                print(f"[WARN] Falha ao ler endereço de referência: {e}")
+                last_loc_text = "Av. Dr. Chucri Zaidan, 920" # Fallback manual se falhar a leitura
+
+            # 2. Obtém o endereço atual (obtido via GPS/Navegador)
+            try:
+                # O endereço atual fica no card de "Localização"
+                current_loc_card = page.locator("div.pm-card:has-text('Localização')").filter(has_not=page.locator("text='último registro'"))
+                current_loc_text = await current_loc_card.locator("div.pm-text-default").inner_text()
+                current_loc_text = current_loc_text.replace("home", "").replace("Meu local de trabalho", "").strip()
+                print(f"[INFO] Endereço atual detectado: {current_loc_text}")
+            except:
+                print("[INFO] Endereço atual não detectado automaticamente. Tentando forçar...")
+                current_loc_text = ""
+
+            # 3. Comparação e Tomada de Decisão
+            # Se o endereço atual for diferente do último, ou estiver vazio, forçamos o uso do último
+            if not current_loc_text or last_loc_text[:20] not in current_loc_text:
+                print("[WARN] Endereço atual diverge ou não foi obtido. Forçando 'Utilizar essa localização' do último registro...")
+                btn_use_last = page.locator("small:has-text('Utilizar essa localização')")
+                await btn_use_last.click()
+                await page.wait_for_timeout(3000)
+                
+                # Re-valida após o clique
+                final_check_text = await page.locator("div.pm-card:has-text('Localização')").first.inner_text()
+                if last_loc_text[:20] in final_check_text:
+                    print("[OK] Endereço corrigido com sucesso para o do último registro.")
+                else:
+                    raise Exception("Falha crítica: Endereço não pôde ser validado mesmo após tentativa de correção.")
+            else:
+                print("[OK] Endereço atual validado e coincide com o registro anterior.")
 
             # ── BATER PONTO ────────────────────────────────────────────────────
             print("[STEP 7] Clicando 'Bater ponto'…")
