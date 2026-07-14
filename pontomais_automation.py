@@ -12,7 +12,7 @@ load_dotenv("pontomais.env")
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-TARGET_TIMES = ["08:00", "14:05", "15:05", "17:55"]
+TARGET_TIMES = ["08:00", "13:00", "14:00", "17:48"]
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Telegram com Lógica de Retry
