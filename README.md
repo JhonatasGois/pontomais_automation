@@ -1,28 +1,28 @@
 # Pontomais Automation
 
-Automação em Python para registrar o ponto no sistema Ponto Mais, com validação de localização, tratamento de falhas e notificações via Telegram.
+Automação em Python para registrar o ponto no sistema Ponto Mais, com validação de localização, tratamento de falhas e notificações por Telegram.
 
 ## Visão geral
 
-Este projeto foi desenvolvido para automatizar o registro de ponto em horários definidos, usando o navegador em modo headless com Playwright, e enviar status do processo ao Telegram. A rotina executa um fluxo completo que inclui login, navegação, validação de localização, clique no botão de registrar ponto e respostas automáticas em caso de erro.
+Este projeto foi desenvolvido para automatizar o registro de ponto em horários definidos usando Playwright em modo headless. A rotina realiza login, valida a localização, usa o último endereço conhecido como fallback quando necessário, registra o ponto e envia mensagens de status para o Telegram.
 
 ## Importância do cron-job externo
 
-O código e o workflow deixam explícito que o agendamento nativo do GitHub Actions (`schedule`/cron) não é confiável para disparos pontuais no horário exato. Em ambientes compartilhados, a execução pode atrasar de minutos a horas, o que seria crítico para registrar o ponto corretamente.
+O código e o workflow deixam explícito que o agendamento nativo do GitHub Actions (`schedule`/cron) não é confiável para disparos pontuais no horário exato. Em ambientes compartilhados, a execução pode atrasar de minutos a horas, o que é crítico para registrar o ponto corretamente.
 
-Por isso, o projeto foi pensado para ser disparado por um serviço externo de cron, como o `cron-job.org`, com `workflow_dispatch` do GitHub Actions. Esse modelo garante que a execução aconteça no horário mais próximo do alvo desejado e reduz o risco de atrasos no registro.
+Por isso, o projeto foi pensado para ser disparado por um serviço externo de cron, como o `cron-job.org`, com `workflow_dispatch` do GitHub Actions. Esse modelo reduz o risco de atrasos e garante que a execução aconteça no momento mais próximo do horário-alvo.
 
 ## Funcionalidades
 
 - Login automático no Ponto Mais;
-- navegação até a tela de ponto;
+- navegação até a tela de registro do ponto;
 - validação da localização do navegador e comparação com o último registro;
 - uso do endereço do último ponto como fallback quando a localização atual não é confiável;
 - clique automatizado no botão de registro do ponto;
-- screenshots de debug e relatório de erro;
+- screenshots de debug e relatórios de erro;
 - envio de mensagens e imagens para o Telegram;
 - retry em falhas do fluxo;
-- watchdog global para abortar a execução se o processo travar.
+- watchdog global para interromper a execução caso o processo trave.
 
 ## Estrutura do projeto
 
@@ -33,18 +33,34 @@ Por isso, o projeto foi pensado para ser disparado por um serviço externo de cr
 │       └── pontomais_checkin.yml
 ├── .gitignore
 ├── pontomais_automation.py
+├── requirements.txt
 ├── README.md
 ```
 
-## Requisitos
+## Requisitos e dependências
+
+### Dependências principais
 
 - Python 3.9+
 - Playwright
 - python-telegram-bot
 - python-dotenv
-- navegador Chromium instalado via Playwright
-- credenciais válidas do Ponto Mais
-- token e chat ID do Telegram
+
+### Arquivo de dependências
+
+O projeto inclui o arquivo `requirements.txt`:
+
+```txt
+playwright>=1.47.0
+python-telegram-bot>=22.0.0
+python-dotenv>=1.0.0
+```
+
+Além disso, é necessário instalar o chromium do Playwright:
+
+```bash
+playwright install chromium --with-deps
+```
 
 ## Instalação
 
@@ -65,13 +81,13 @@ source .venv/bin/activate
 3. Instale as dependências:
 
 ```bash
-pip install playwright python-telegram-bot python-dotenv
+pip install -r requirements.txt
 playwright install chromium --with-deps
 ```
 
 ## Configuração
 
-Crie um arquivo `.env` ou `pontomais.env` na raiz do projeto com as informações abaixo:
+Crie um arquivo `.env` ou `pontomais.env` na raiz do projeto com as seguintes variáveis:
 
 ```env
 PONTOMAIS_LOGIN=seu_usuario
@@ -108,11 +124,11 @@ TARGET_TIMES = ["08:00", "13:00", "14:00", "17:48"]
 
 ## GitHub Actions e cron-job
 
-O workflow definido em `.github/workflows/pontomais_checkin.yml` utiliza `workflow_dispatch`, ou seja, ele é executado manualmente ou por um gatilho externo.
+O workflow em `.github/workflows/pontomais_checkin.yml` usa `workflow_dispatch`, ou seja, ele é disparado manualmente ou por um gatilho externo.
 
-Esse é um ponto importante do projeto: o cron nativo do GitHub Actions não é recomendado para execuções críticas de ponto, porque ele roda em infraestrutura compartilhada e pode atrasar significativamente.
+Esse é um ponto chave do projeto: o cron nativo do GitHub Actions não é recomendado para execuções críticas de ponto, porque ele roda em infraestrutura compartilhada e pode atrasar de forma significativa.
 
-A estrategia adotada é:
+A estratégia adotada é:
 
 1. um serviço externo (como `cron-job.org`) dispara o workflow em horários específicos;
 2. o GitHub Actions inicia a execução;
@@ -134,30 +150,48 @@ A estrategia adotada é:
 
 ## Tratamento de erros
 
-O projeto inclui mecanismos importantes para aumentar confiabilidade:
+O projeto inclui mecanismos para aumentar confiabilidade:
 
 - retries em etapas críticas;
 - fallback para endereço do último registro;
 - screenshots para depuração;
 - envio de alertas por Telegram quando algo falha;
-- timeout global para evitar a execução eterna;
+- timeout global para evitar execução infinita;
 - retry do fluxo completo em caso de falha.
 
-## Observações importantes
+## Uso gratuito e sem garantia
 
-- O Ponto Mais pode alterar a interface do sistema, então os seletores do Playwright exigem manutenção periódica.
-- Dados sensíveis devem permanecer fora do controle de versão.
-- O uso desta automação deve respeitar a política da empresa e as regras do sistema de ponto.
+Este projeto é disponibilizado de forma livre e gratuita para estudo, uso pessoal e adaptação. Ele é entregue "como está", sem garantia de funcionamento contínuo, sem suporte formal e sem compromisso de manutenção permanente.
+
+O código pode ser reutilizado e modificado, desde que seja respeitado o contexto de uso e as políticas internas do ambiente em que for aplicado.
+
+## Licença
+
+Este repositório não possui licença formal definida. O projeto foi publicado como material livre para uso e estudo, sem garantia e sem suporte oficial. Caso queira reutilizar em ambiente corporativo ou profissional, confirme com o responsável do projeto antes de aplicar em produção.
+
+A intenção aqui não é oferecer garantia comercial nem suporte contínuo. O objetivo é compartilhar a solução de forma aberta e útil para quem quiser estudar, adaptar ou evoluir a automação.
+
+## Contribuição e continuidade
+
+Este projeto foi publicado como uma referência prática e estável para uso e estudo. Não há promessa de manutenção contínua por parte do autor.
+
+A comunidade pode continuar o projeto em branches próprias e criar forks para evolução, mas esse repositório principal não será utilizado como base para integração indiscriminada de alterações sem validação e sem garantia de que o código será seguro, estável e adequado ao uso.
+
+Além disso, o código não deve ser usado para automações que violem políticas internas, regras de uso de sistemas corporativos ou qualquer comportamento que configure uso indevido ou ilícito.
+
+## Contato
+
+Se quiser entrar em contato, envie um e-mail para:
+
+- jhonatasgois@gmail.com
+
+Não há PIX, doação ou cobrança pública vinculada ao projeto. O repositório deve ser entendido como software gratuito e livre para uso, estudo e adaptação.
 
 ## Segurança
 
 - Nunca compartilhe arquivos `.env` ou `pontomais.env`;
 - mantenha os secrets do GitHub protegidos;
 - revise com frequência os seletores e as dependências do projeto.
-
-## Licença
-
-Não há licença explícita no repositório. Antes de reutilizar ou distribuir o projeto, confirme a política interna da organização ou do responsável pelo projeto.
 
 ## Resumo
 
